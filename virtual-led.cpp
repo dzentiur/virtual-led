@@ -9,6 +9,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -17,6 +18,13 @@
 
 #include <iostream>
 #include <cstring>
+
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/Xos.h>
+
+#include <pthread.h>
+
 
 //
 // namespace for model
@@ -47,6 +55,162 @@ namespace virtual_led_model {
 	//
 	//
 	int _blinking_rate_ = 0;
+
+	//
+	//
+	namespace x11_visualization {
+
+		//
+		//
+		using namespace std;
+
+		//
+		// visualization thread
+		pthread_t _visualizaton_thread_ = 0;
+		//
+		//
+		led_color _visualization_color_ = LC_RED;
+		//
+		//
+		int _blink_rate_ = 0;
+
+
+		//
+		//
+		void* visualization_thread(void* _arg_) {
+
+			//
+			//
+			cout << __FUNCTION__ << " executed" << endl;
+
+			//
+			//
+			Display* dpy = XOpenDisplay(NULL);
+			//
+			if (dpy == NULL) {
+				//
+				cerr << "Cannot open display\n";
+				//
+				//
+				exit(1);
+			}
+			//
+			int s = DefaultScreen(dpy);
+			//
+			Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, s), 10, 10, 50, 50, 1,
+								   BlackPixel(dpy, s), WhitePixel(dpy, s));
+			//
+			XSelectInput(dpy, win, ExposureMask | KeyPressMask);
+			//
+			XMapWindow(dpy, win);
+			//
+			XStoreName(dpy, win, "Virtual LED visualization");
+			//
+			Atom WM_DELETE_WINDOW = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+			//
+			//
+			XSetWMProtocols(dpy, win, &WM_DELETE_WINDOW, 1);
+			//
+			// Getting graphic context
+			GC _gc_ = XCreateGC(dpy, win, NULL, NULL);
+			//
+			// TODO we must check GC creation result
+			/*if(_gc_) {
+				//
+				//
+			}*/
+			//
+			// Allocating color
+			XColor _selected_color_ = {0, 64000, 0, 0, DoRed | DoGreen | DoBlue};
+			//
+			if(XAllocColor(dpy, DefaultColormap(dpy, s), &_selected_color_) == 0) {
+				//
+				//
+				cerr << "Can't obtain color by name." << endl;
+				//
+				exit(0);
+			}
+			//
+			// Setting foreground color
+			if(XSetForeground(dpy, _gc_, _selected_color_.pixel) == 0) {
+				//
+				//
+				cerr << __FUNCTION__ << "failed on setting foreground color. " << endl;
+				//
+				exit(0);
+			}
+			//
+			//
+			bool uname_ok = false;
+			//
+			struct utsname sname;
+			//
+			int ret = uname(&sname);
+			//
+			if (ret != -1) {
+				//
+				uname_ok = true;
+			}
+			//
+			XEvent e;
+			//
+			while (1) {
+				//
+				XNextEvent(dpy, &e);
+				//
+				if (e.type == Expose) {
+					//
+					//
+					XFillRectangle(dpy, win, _gc_, 5, 5, 25, 25);
+				}
+				//
+				if (e.type == KeyPress) {
+					//
+					char buf[128] = {0};
+					KeySym keysym;
+					int len = XLookupString(&e.xkey, buf, sizeof buf, &keysym, NULL);
+					if (keysym == XK_Escape)
+					break;
+				}
+				//
+				if ((e.type == ClientMessage) &&
+				(static_cast<unsigned int>(e.xclient.data.l[0]) == WM_DELETE_WINDOW)) {
+					//
+					break;
+				}
+			}
+			//
+			//
+			XFreeGC(dpy, _gc_);
+			//
+			XDestroyWindow(dpy, win);
+			//
+			XCloseDisplay(dpy);
+			//
+			//
+			return 0;
+		}
+
+		//
+		//
+		bool start(led_color _new_color_, int _new_rate_) {
+			//
+			// If visualization thread exists -
+			if(0 != pthread_create(&_visualizaton_thread_, NULL, visualization_thread, NULL)) {
+				//
+				//
+				return false;
+			}
+
+		}
+
+		//
+		//
+		bool stop() {
+			//;
+		}
+	};
+
 
 	//
 	//
@@ -178,6 +342,8 @@ namespace virtual_led_model {
 		//
 		_led_state_ = LS_ON;
 		//
+		x11_visualization::start(LC_BLUE, 4);
+		//
 		//
 		return true;
 	}
@@ -188,6 +354,9 @@ namespace virtual_led_model {
 		//
 		//
 		_led_state_ = LS_OFF;
+		//
+		//
+		x11_visualization::stop();
 		//
 		//
 		return true;
