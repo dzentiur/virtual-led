@@ -69,23 +69,433 @@ namespace virtual_led_model {
 		pthread_t _visualizaton_thread_ = 0;
 		//
 		//
+		pthread_t _blinking_thread_ = 0;
+		//
+		//
 		led_color _visualization_color_ = LC_RED;
 		//
+		// is LED visualization turned on
+		led_state _visualization_state_ = LS_OFF;
 		//
-		int _blink_rate_ = 0;
+		// is LED currently lights(1) or faded(0)
+		int _blinking_state_ = 1;
+		//
+		//
+		Display* _display_ = NULL;
+		//
+		Window _window_;
+		//
+		GC _gc_;
+		//
+		// visualization x11 colors
+		XColor _red_color_ = {0, 64000, 0, 0, DoRed | DoGreen | DoBlue};
+		//
+		XColor _green_color_ = {0, 0, 64000, 0, DoRed | DoGreen | DoBlue};
+		//
+		XColor _blue_color_ = {0, 0, 0, 64000, DoRed | DoGreen | DoBlue};
+		//
+		XColor _gray_color_ = {0, 48000, 48000, 48000, DoRed | DoGreen | DoBlue};
 
+
+		//
+		//
+		bool redraw_visualization() {
+			//
+			// selecting appropriate color
+			unsigned long int _selected_color_pixel_id_ = _red_color_.pixel;
+			//
+			// NB need synchronization here
+			switch(_visualization_color_) {
+				//
+				case LC_RED: _selected_color_pixel_id_ = _red_color_.pixel; break;
+				//
+				case LC_GREEN: _selected_color_pixel_id_ = _green_color_.pixel; break;
+				//
+				case LC_BLUE: _selected_color_pixel_id_ = _blue_color_.pixel; break;
+				//
+				default:
+					//
+					//
+					cerr << __FUNCTION__ << "unsupported visualization color. " << endl;
+					//
+					exit(0);
+			};
+			//
+			// If LED is faded while blinking or turned off - we must set gray color
+			if(_blinking_state_ == 0 || _led_state_ == LS_OFF) {
+				//
+				_selected_color_pixel_id_ = _gray_color_.pixel;
+			}
+			//
+			// Setting foreground color
+			if(XSetForeground(_display_, _gc_, _selected_color_pixel_id_) == 0) {
+				//
+				//
+				cerr << __FUNCTION__ << "failed on setting foreground color. " << endl;
+				//
+				exit(0);
+			}
+			//
+			//
+			XFillRectangle(_display_, _window_, _gc_, 5, 5, 25, 25);
+			//
+			//
+			return true;
+		}
 
 		//
 		//
 		void* visualization_thread(void* _arg_) {
-
 			//
 			//
 			cout << __FUNCTION__ << " executed" << endl;
+			//
+			//
+			_display_ = XOpenDisplay(NULL);
+			//
+			if (_display_ == NULL) {
+				//
+				cerr << "Cannot open display\n";
+				//
+				//
+				exit(1);
+			}
+			//
+			int s = DefaultScreen(_display_);
+			//
+			_window_ = XCreateSimpleWindow(_display_, RootWindow(_display_, s), 10, 10, 50, 50, 1,
+								   BlackPixel(_display_, s), WhitePixel(_display_, s));
+			//
+			XSelectInput(_display_, _window_, ExposureMask);
+			//
+			XMapWindow(_display_, _window_);
+			//
+			XStoreName(_display_, _window_, "Virtual LED visualization");
+			//
+			Atom WM_DELETE_WINDOW = XInternAtom(_display_, "WM_DELETE_WINDOW", False);
+			//
+			//
+			XSetWMProtocols(_display_, _window_, &WM_DELETE_WINDOW, 1);
+			//
+			// Getting graphic context
+			_gc_ = XCreateGC(_display_, _window_, NULL, NULL);
+			//
+			// TODO we must check GC creation result
+			/*if(_gc_) {
+				//
+				//
+			}*/
+			//
+			// Allocating colors
+			if(XAllocColor(_display_, DefaultColormap(_display_, s), &_red_color_) == 0 ||
+					XAllocColor(_display_, DefaultColormap(_display_, s), &_green_color_) == 0 ||
+					XAllocColor(_display_, DefaultColormap(_display_, s), &_blue_color_) == 0 ||
+					XAllocColor(_display_, DefaultColormap(_display_, s), &_gray_color_) == 0) {
+				//
+				//
+				cerr << "Can't obtain color." << endl;
+				//
+				exit(0);
+			}
+			//
+			//
+			bool uname_ok = false;
+			//
+			struct utsname sname;
+			//
+			int ret = uname(&sname);
+			//
+			if (ret != -1) {
+				//
+				uname_ok = true;
+			}
+			//
+			XEvent e;
+			//
+			while (1) {
+				//
+				XNextEvent(_display_, &e);
+				//
+				if (e.type == Expose) {
+					//
+					redraw_visualization();
+				}
+				//
+				if ((e.type == ClientMessage) &&
+						(static_cast<unsigned int>(e.xclient.data.l[0]) == WM_DELETE_WINDOW)) {
+					//
+					break;
+				}
+			}
+			//
+			//
+			XFreeGC(_display_, _gc_);
+			//
+			XDestroyWindow(_display_, _window_);
+			//
+			XCloseDisplay(_display_);
+			//
+			//
+			return 0;
+		}
 
+		//
+		//
+		bool send_x11_update_event() {
 			//
 			//
-			Display* dpy = XOpenDisplay(NULL);
+			_XEvent _event_;
+			//
+			memset(&_event_, 0, sizeof(_event_));
+			//
+			_event_.type = Expose;
+			//
+			_event_.xexpose.window = _window_;
+			//
+			XSendEvent(_display_, _window_, False, ExposureMask, &_event_);
+			//
+			XFlush(_display_);
+			//
+			//
+			return false;
+		}
+
+		//
+		// changes blinking state according to rate
+		//	generates x11 expose events when blinking state changes
+		void* blinking_thread(void*) {
+			//
+			//
+			while(1) {
+				//
+				// Getting current blinking rate
+				int _current_blinking_rate_ = _blinking_rate_;
+				//
+				// calculating current sleep period
+				if(_current_blinking_rate_ == 0) {
+					//
+					// Blinking is off
+					break;
+				}
+				//
+				int _sleep_period_ = 1000000 / (_current_blinking_rate_*2);
+				//
+				usleep (_sleep_period_);
+				//
+				// Now we turn blinking state
+				_blinking_state_ = _blinking_state_ ? 0 : 1;
+				//
+				// Sending expose event after changing blinking state
+				send_x11_update_event();
+			}
+			//
+			//
+			return NULL;
+		}
+
+		//
+		//
+		bool start(led_color _new_color_, int _new_rate_) {
+			//
+			// If visualization thread exists -
+			if(0 != pthread_create(&_visualizaton_thread_, NULL, visualization_thread, NULL)) {
+				//
+				//
+				return false;
+			}
+			//
+			//
+			if(0 != pthread_create(&_blinking_thread_, NULL, blinking_thread, NULL)) {
+				//
+				//
+				return false;
+			}
+			//
+			//
+			return false;
+		}
+
+		//
+		//
+		bool stop() {
+			//
+		}
+	};
+
+	namespace x11_visualization_one_thread_approach {
+
+		//
+		//
+		using namespace std;
+
+		//
+		// visualization thread
+		pthread_t _visualizaton_thread_ = 0;
+		//
+		//
+		led_color _visualization_color_ = LC_RED;
+		//
+		//
+		int _blink_rate_ = 0;
+		//
+		// is LED visualization turned on
+		led_state _state_ = LS_OFF;
+		//
+		// is LED currently lights(1) or faded(0)
+		int _blinking_state_ = 1;
+		//
+		//
+		Display* _display_ = NULL;
+		//
+		// visualization x11 colors
+		XColor _red_color_ = {0, 64000, 0, 0, DoRed | DoGreen | DoBlue};
+		//
+		XColor _green_color_ = {0, 0, 64000, 0, DoRed | DoGreen | DoBlue};
+		//
+		XColor _blue_color_ = {0, 0, 0, 64000, DoRed | DoGreen | DoBlue};
+		//
+		XColor _blinking_fade_color_ = {0, 48000, 48000, 48000, DoRed | DoGreen | DoBlue};
+
+		//
+		//
+		bool my_XNextEventTimed(Display* dsp, XEvent* event_return, struct timeval*	tv) {
+			//
+			// Check for timeout is set
+			if (tv == NULL) {
+				//
+				//
+				XNextEvent(dsp, event_return);
+				//
+				//
+				return true;
+			}
+			//
+			// Check for any events already available
+			if (XPending(dsp) != 0) {
+				//
+				//
+				XNextEvent(dsp, event_return);
+				//
+				//
+				return true;
+			}
+			//
+			// Waiting for connection to x server
+			int fd = ConnectionNumber(dsp);
+			//
+			fd_set readset;
+			//
+			FD_ZERO(&readset);
+			//
+			FD_SET(fd, &readset);
+			//
+			if (select(fd+1, &readset, NULL, NULL, tv) == 0) {
+				//
+				// Waiting is timed out
+				return false;
+			}
+			//
+			//
+			XNextEvent(dsp, event_return);
+			//
+			//
+			return true;
+		}
+
+		//
+		//
+		bool redraw_visualization(Display* dpy, Window win, GC _gc_) {
+			//
+			// selecting appropriate color
+			unsigned long int _selected_color_pixel_id_ = _red_color_.pixel;
+			//
+			// NB need synchronization here
+			switch(_visualization_color_) {
+				//
+				case LC_RED: _selected_color_pixel_id_ = _red_color_.pixel; break;
+				//
+				case LC_GREEN: _selected_color_pixel_id_ = _green_color_.pixel; break;
+				//
+				case LC_BLUE: _selected_color_pixel_id_ = _blue_color_.pixel; break;
+				//
+				default:
+					//
+					//
+					cerr << __FUNCTION__ << "unsupported visualization color. " << endl;
+					//
+					exit(0);
+			};
+			//
+			// Setting foreground color
+			if(XSetForeground(dpy, _gc_, _selected_color_pixel_id_) == 0) {
+				//
+				//
+				cerr << __FUNCTION__ << "failed on setting foreground color. " << endl;
+				//
+				exit(0);
+			}
+			//
+			//
+			XFillRectangle(dpy, win, _gc_, 5, 5, 25, 25);
+			//
+			//
+			return true;
+		}
+
+		//
+		//
+		bool wait_and_process_event() {
+			//
+			// select type of event to wait for:
+			//
+			// Check for any x11 events already available
+			if (XPending(_display_) != 0) {
+				//
+				//goto PROCESS_X11_EVENT;
+			}
+			//
+			// Preparing common set of fd's to wait for: x11 connection fd, timer fd
+			fd_set _fds_set_;
+			//
+			FD_ZERO(&_fds_set_);
+			//
+			//
+			int _x11_connection_fd_ = ConnectionNumber(_display_);
+			//
+			FD_SET(_x11_connection_fd_, &_fds_set_);
+			//
+			//
+			//timeval _timeout_value_ = { 0, 100000 };
+			//
+			//FD_SET(_blinking_timer_fd_, &_fds_set_);
+			//
+			// Waiting for connection to x server or timer event
+			//timeval _timeout_value_ = { 0, 10000 };
+			//
+			/*if (select(fd+1, &_fds_set_, NULL, NULL, &_timeout_value_) == 0) {
+				//
+				// Waiting is timed out
+				return false;
+			}*/
+			//
+			//
+			//
+			//
+			//PROCESS_X11_EVENT:
+				//
+				//
+				//return process_x11_event();
+		}
+
+		//
+		//
+		void* visualization_thread(void* _arg_) {
+			//
+			//
+			cout << __FUNCTION__ << " executed" << endl;
+			//
+			//
+			/*dpy = XOpenDisplay(NULL);
 			//
 			if (dpy == NULL) {
 				//
@@ -112,7 +522,7 @@ namespace virtual_led_model {
 			XSetWMProtocols(dpy, win, &WM_DELETE_WINDOW, 1);
 			//
 			// Getting graphic context
-			GC _gc_ = XCreateGC(dpy, win, NULL, NULL);
+			GC _gc_ = XCreateGC(dpy, win, NULL, NULL);*/
 			//
 			// TODO we must check GC creation result
 			/*if(_gc_) {
@@ -120,25 +530,17 @@ namespace virtual_led_model {
 				//
 			}*/
 			//
-			// Allocating color
-			XColor _selected_color_ = {0, 64000, 0, 0, DoRed | DoGreen | DoBlue};
-			//
-			if(XAllocColor(dpy, DefaultColormap(dpy, s), &_selected_color_) == 0) {
+			// Allocating colors
+			/*if(XAllocColor(dpy, DefaultColormap(dpy, s), &_red_color_) == 0 ||
+					XAllocColor(dpy, DefaultColormap(dpy, s), &_green_color_) == 0 ||
+					XAllocColor(dpy, DefaultColormap(dpy, s), &_blue_color_) == 0 ||
+					XAllocColor(dpy, DefaultColormap(dpy, s), &_blinking_fade_color_) == 0) {
 				//
 				//
-				cerr << "Can't obtain color by name." << endl;
-				//
-				exit(0);
-			}
-			//
-			// Setting foreground color
-			if(XSetForeground(dpy, _gc_, _selected_color_.pixel) == 0) {
-				//
-				//
-				cerr << __FUNCTION__ << "failed on setting foreground color. " << endl;
+				cerr << "Can't obtain color." << endl;
 				//
 				exit(0);
-			}
+			}*/
 			//
 			//
 			bool uname_ok = false;
@@ -156,36 +558,40 @@ namespace virtual_led_model {
 			//
 			while (1) {
 				//
-				XNextEvent(dpy, &e);
+				wait_and_process_event();
+				//my_XNextEventTimed(dpy, &e, &_timeout_value_);
 				//
 				if (e.type == Expose) {
 					//
-					//
-					XFillRectangle(dpy, win, _gc_, 5, 5, 25, 25);
+					//redraw_visualization(dpy, win, _gc_);
 				}
 				//
 				if (e.type == KeyPress) {
 					//
 					char buf[128] = {0};
+					//
 					KeySym keysym;
+					//
 					int len = XLookupString(&e.xkey, buf, sizeof buf, &keysym, NULL);
-					if (keysym == XK_Escape)
-					break;
+					//
+					if (keysym == XK_Escape) {
+						break;
+					}
 				}
 				//
-				if ((e.type == ClientMessage) &&
-				(static_cast<unsigned int>(e.xclient.data.l[0]) == WM_DELETE_WINDOW)) {
+				/*if ((e.type == ClientMessage) &&
+						(static_cast<unsigned int>(e.xclient.data.l[0]) == WM_DELETE_WINDOW)) {
 					//
 					break;
-				}
+				}*/
 			}
 			//
 			//
-			XFreeGC(dpy, _gc_);
+			//XFreeGC(dpy, _gc_);
 			//
-			XDestroyWindow(dpy, win);
+			//XDestroyWindow(dpy, win);
 			//
-			XCloseDisplay(dpy);
+			//XCloseDisplay(dpy);
 			//
 			//
 			return 0;
