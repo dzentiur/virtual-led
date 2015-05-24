@@ -26,9 +26,18 @@
 #include <pthread.h>
 
 
+using namespace std;
+
+#define FUNC_FAILED( message ) cerr << __FUNCTION__ << " " << message << endl;
+
+
 //
 // namespace for model
 namespace virtual_led_model {
+
+	//
+	//
+	using namespace std;
 
 	//
 	//
@@ -48,10 +57,10 @@ namespace virtual_led_model {
 
 	//
 	//
-	int _led_state_ = LS_OFF;
+	led_state _led_state_ = LS_OFF;
 	//
 	//
-	int _led_color_ = LC_RED;
+	led_color _led_color_ = LC_RED;
 	//
 	//
 	int _blinking_rate_ = 0;
@@ -66,7 +75,7 @@ namespace virtual_led_model {
 
 		//
 		// visualization thread
-		pthread_t _visualizaton_thread_ = 0;
+		pthread_t _visualization_thread_ = 0;
 		//
 		//
 		pthread_t _blinking_thread_ = 0;
@@ -77,10 +86,13 @@ namespace virtual_led_model {
 		// is LED visualization turned on
 		led_state _visualization_state_ = LS_OFF;
 		//
+		//
+		int _visualization_rate_ = 0;
+		//
 		// is LED currently lights(1) or faded(0)
 		int _blinking_state_ = 1;
 		//
-		//
+		// X11 stuff
 		Display* _display_ = NULL;
 		//
 		Window _window_;
@@ -96,7 +108,6 @@ namespace virtual_led_model {
 		//
 		XColor _gray_color_ = {0, 48000, 48000, 48000, DoRed | DoGreen | DoBlue};
 
-
 		//
 		//
 		bool redraw_visualization() {
@@ -105,7 +116,7 @@ namespace virtual_led_model {
 			unsigned long int _selected_color_pixel_id_ = _red_color_.pixel;
 			//
 			// NB need synchronization here
-			switch(_visualization_color_) {
+			switch(_led_color_) {
 				//
 				case LC_RED: _selected_color_pixel_id_ = _red_color_.pixel; break;
 				//
@@ -115,10 +126,10 @@ namespace virtual_led_model {
 				//
 				default:
 					//
+					FUNC_FAILED(" failed due to unsupported visualization color");
 					//
-					cerr << __FUNCTION__ << "unsupported visualization color. " << endl;
 					//
-					exit(0);
+					return false;
 			};
 			//
 			// If LED is faded while blinking or turned off - we must set gray color
@@ -131,13 +142,17 @@ namespace virtual_led_model {
 			if(XSetForeground(_display_, _gc_, _selected_color_pixel_id_) == 0) {
 				//
 				//
-				cerr << __FUNCTION__ << "failed on setting foreground color. " << endl;
+				FUNC_FAILED(" failed on setting foreground color. ");
 				//
-				exit(0);
+				//
+				return false;
 			}
 			//
 			//
 			XFillRectangle(_display_, _window_, _gc_, 5, 5, 25, 25);
+			//
+			//
+			XFlush(_display_);
 			//
 			//
 			return true;
@@ -155,7 +170,7 @@ namespace virtual_led_model {
 			//
 			if (_display_ == NULL) {
 				//
-				cerr << "Cannot open display\n";
+				FUNC_FAILED(" on XOpenDisplay()");
 				//
 				//
 				exit(1);
@@ -163,7 +178,7 @@ namespace virtual_led_model {
 			//
 			int s = DefaultScreen(_display_);
 			//
-			_window_ = XCreateSimpleWindow(_display_, RootWindow(_display_, s), 10, 10, 50, 50, 1,
+			_window_ = XCreateSimpleWindow(_display_, RootWindow(_display_, s), 10, 10, 400, 80, 1,
 								   BlackPixel(_display_, s), WhitePixel(_display_, s));
 			//
 			XSelectInput(_display_, _window_, ExposureMask);
@@ -193,7 +208,7 @@ namespace virtual_led_model {
 					XAllocColor(_display_, DefaultColormap(_display_, s), &_gray_color_) == 0) {
 				//
 				//
-				cerr << "Can't obtain color." << endl;
+				FUNC_FAILED(" failed on XAllocColor()");
 				//
 				exit(0);
 			}
@@ -266,6 +281,9 @@ namespace virtual_led_model {
 		void* blinking_thread(void*) {
 			//
 			//
+			//pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+			//
+			//
 			while(1) {
 				//
 				// Getting current blinking rate
@@ -295,30 +313,170 @@ namespace virtual_led_model {
 
 		//
 		//
-		bool start(led_color _new_color_, int _new_rate_) {
+		bool start() {
 			//
-			// If visualization thread exists -
-			if(0 != pthread_create(&_visualizaton_thread_, NULL, visualization_thread, NULL)) {
+			//
+			if(!XInitThreads()) {
+				//
+				FUNC_FAILED(" failed on XInitThreads()");
 				//
 				//
 				return false;
 			}
 			//
 			//
-			if(0 != pthread_create(&_blinking_thread_, NULL, blinking_thread, NULL)) {
+			if(_visualization_thread_ == 0) {
 				//
-				//
-				return false;
+				if(0 != pthread_create(&_visualization_thread_, NULL, visualization_thread, NULL)) {
+					//
+					FUNC_FAILED(" failed on pthread_create()");
+					//
+					//
+					return false;
+				}
 			}
+			//
+			//
+			if(_blinking_thread_ == 0) {
+				//
+				if(0 != pthread_create(&_blinking_thread_, NULL, blinking_thread, NULL)) {
+					//
+					FUNC_FAILED(" failed on pthread_create() 2");
+					//
+					//
+					return false;
+				}
+			}
+			//
+			//
+			return true;
+		}
+
+		//
+		//
+		bool signal_led_change(led_color _new_led_color_, led_state _new_led_state_, int _new_led_rate_) {
+			//
+			// NB Here we must lock visualization data
+			//
+			// Preserving old values
+			led_color _old_color_ = _visualization_color_;
+			//
+			led_state _old_state_ = _visualization_state_;
+			//
+			int _old_rate_ = _visualization_rate_;
+			//
+			// Setting internal variables
+			_visualization_color_ = _new_led_color_;
+			//
+			_visualization_state_ = _new_led_state_;
+			//
+			_visualization_rate_ = _new_led_rate_;
+			//
+			// Changing blinking
+			if(_visualization_rate_ != _old_rate_) {
+				//
+				// Restarting blinking thread
+				//
+				// We finish old blinking thread only if it was actually set
+				if(_old_rate_ != 0) {
+					//
+					if(pthread_cancel(_blinking_thread_)) {
+						//
+						FUNC_FAILED(" failed on pthread_cancel()");
+						//
+						goto FAIL_END;
+					}
+					//
+					if(pthread_join(_blinking_thread_, NULL)) {
+						//
+						FUNC_FAILED(" failed on pthread_join()");
+						//
+						goto FAIL_END;
+					}
+				}
+				//
+				// We start blinking thread only if blinking actually set
+				if(_visualization_rate_ != 0) {
+					//
+					if(pthread_create(&_blinking_thread_, NULL, blinking_thread, NULL)) {
+						//
+						FUNC_FAILED(" failed on pthread_create()");
+						//
+						goto FAIL_END;
+					}
+				}
+			}
+			//
+			// update visualization
+			if(!redraw_visualization()) {
+				//
+				FUNC_FAILED(" have fail on redraw_visualization()");
+			}
+			//
+			// NB Here we must unlock visualization data
+			//
+			//
+			return true;
+
+		FAIL_END:
+			//
+			// Restoring internal settings
+			_visualization_state_ = _old_state_;
+			//
+			_visualization_color_ = _old_color_;
+			//
+			_visualization_rate_ = _old_rate_;
+			//
+			// NB Here we must unlock visualization data
 			//
 			//
 			return false;
 		}
 
 		//
-		//
+		// visualization isn't restartable
 		bool stop() {
 			//
+			bool _result_ = true;
+			//
+			// Stopping threads
+			if(pthread_cancel(_visualization_thread_) == 0) {
+				//
+				//
+				if(pthread_join(_visualization_thread_, NULL)) {
+					//
+					cerr << __FUNCTION__ << " have fail on pthread_join()" << endl;
+					//
+					_result_ = false;
+				}
+			}
+			else {
+				//
+				cerr << __FUNCTION__ << " have fail on pthread_cancel()" << endl;
+				//
+				_result_ = false;
+			}
+			//
+			//
+			if(pthread_cancel(_blinking_thread_) == 0) {
+				//
+				//
+				if(pthread_join(_blinking_thread_, NULL)) {
+					//
+					cerr << __FUNCTION__ << " have fail on pthread_join() 2" << endl;
+					//
+					_result_ = false;
+				}
+			}
+			else {
+				//
+				cerr << __FUNCTION__ << " failed on pthread_cancel() 2" << endl;
+				//
+				_result_ = false;
+			}
+			//
+			//
+			return _result_;
 		}
 	};
 
@@ -656,6 +814,13 @@ namespace virtual_led_model {
 		_blinking_rate_ = _new_blinking_rate_;
 		//
 		//
+		if(!x11_visualization::signal_led_change(_led_color_, _led_state_, _blinking_rate_)) {
+			//
+			//
+			cerr << __FUNCTION__ << " have fail on x11_visualization::signal_led_change()" << endl;
+		}
+		//
+		//
 		return true;
 	}
 
@@ -711,7 +876,14 @@ namespace virtual_led_model {
 		}
 		//
 		//
-		_led_color_ = _new_led_color_;
+		_led_color_ = (led_color)_new_led_color_;
+		//
+		//
+		if(!x11_visualization::signal_led_change(_led_color_, _led_state_, _blinking_rate_)) {
+			//
+			//
+			cerr << __FUNCTION__ << " have fail on x11_visualization::signal_led_change()" << endl;
+		}
 		//
 		//
 		return true;
@@ -743,12 +915,44 @@ namespace virtual_led_model {
 
 	//
 	//
+	bool init() {
+		//
+		if(!x11_visualization::start()) {
+			//
+			//
+			FUNC_FAILED(" have fail on x11_visualization::start()");
+		}
+		//
+		//
+		return true;
+	}
+
+	//
+	//
+	bool deinit() {
+		//
+		if(!x11_visualization::stop()) {
+			//
+			//
+			cerr << __FUNCTION__ << " have fail on x11_visualization::stop()" << endl;
+		}
+		//
+		//
+		return true;
+	}
+
+	//
+	//
 	bool turn_on() {
 		//
 		//
 		_led_state_ = LS_ON;
 		//
-		x11_visualization::start(LC_BLUE, 4);
+		if(!x11_visualization::signal_led_change(_led_color_, _led_state_, _blinking_rate_)) {
+			//
+			//
+			cerr << __FUNCTION__ << " have fail on x11_visualization::signal_led_change()" << endl;
+		}
 		//
 		//
 		return true;
@@ -762,7 +966,11 @@ namespace virtual_led_model {
 		_led_state_ = LS_OFF;
 		//
 		//
-		x11_visualization::stop();
+		if(!x11_visualization::signal_led_change(_led_color_, _led_state_, _blinking_rate_)) {
+			//
+			//
+			cerr << __FUNCTION__ << " have fail on x11_visualization::signal_led_change()" << endl;
+		}
 		//
 		//
 		return true;
@@ -1242,9 +1450,6 @@ namespace commands_processing {
 	};
 }
 
-using namespace std;
-
-#define FUNC_FAILED( message ) cerr << __FUNCTION__ << " " << message << endl;
 
 //
 //
@@ -1434,6 +1639,15 @@ int main() {
 		//
 		//
 		FUNC_FAILED("failed on system_interaction::open_fifos()");
+		//
+		//
+		return 0;
+	}
+	//
+	// initializing virtual led model
+	if(!virtual_led_model::init()) {
+		//
+		FUNC_FAILED("failed on virtual_led_model::init()");
 		//
 		//
 		return 0;
