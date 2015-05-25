@@ -123,6 +123,9 @@ namespace virtual_led_model {
 		//
 		pthread_mutex_t _visualization_data_mutex_ = PTHREAD_MUTEX_INITIALIZER;
 
+
+		bool check_and_reset_x11_error();
+
 		//
 		// tool function to be called from visualization_thread()
 		bool redraw_visualization() {
@@ -131,7 +134,7 @@ namespace virtual_led_model {
 			unsigned long int _selected_color_pixel_id_ = _red_color_.pixel;
 			//
 			//
-			RETURN_FAIL_IF((pthread_mutex_lock(&_visualization_data_mutex_) != 0),
+			RETURN_FAIL_IF(pthread_mutex_lock(&_visualization_data_mutex_),
 					"failed on pthread_mutex_lock()");
 			//
 			switch(_visualization_color_) {
@@ -156,18 +159,20 @@ namespace virtual_led_model {
 				_selected_color_pixel_id_ = _gray_color_.pixel;
 			}
 			//
-			RETURN_FAIL_IF(pthread_mutex_unlock(&_visualization_data_mutex_)!=0,
+			RETURN_FAIL_IF(pthread_mutex_unlock(&_visualization_data_mutex_),
 					"failed on pthread_mutex_unlock()");
 			//
 			// Setting foreground color
 			XSetForeground(_display_, _gc_, _selected_color_pixel_id_);
+			LOG_FAIL_IF(check_and_reset_x11_error(), "have fail on XSetForeground()");
 			//
 			//
 			XFillRectangle(_display_, _window_, _gc_, 5, 5, 25, 25);
+			LOG_FAIL_IF(check_and_reset_x11_error(), "have fail on XFillRectangle()");
 			//
 			//
-			LOG_FAIL_IF(!XFlush(_display_),
-					"have fail on XFlush()");
+			XFlush(_display_);
+			LOG_FAIL_IF(check_and_reset_x11_error(), "have fail on XFlush()");
 			//
 			//
 			return true;
@@ -182,7 +187,15 @@ namespace virtual_led_model {
 			//
 			while (1) {
 				//
+				//
 				XNextEvent(_display_, &e);
+				//
+				if(check_and_reset_x11_error()) {
+					//
+					FUNC_FAILED("have fail on XNextEvent()");
+					//
+					continue;
+				}
 				//
 				if (e.type == Expose) {
 					//
@@ -217,8 +230,8 @@ namespace virtual_led_model {
 			RETURN_FAIL_IF(!XSendEvent(_display_, _window_, False, ExposureMask, &_event_),
 					"failed on XSendEvent()");
 			//
-			RETURN_FAIL_IF(!XFlush(_display_),
-					"failed on XFlush()");
+			XFlush(_display_);
+			RETURN_FAIL_IF(check_and_reset_x11_error(), "failed on XFlush()");
 			//
 			//
 			return true;
@@ -269,7 +282,12 @@ namespace virtual_led_model {
 
 		//
 		// Called on each error
+		bool _x11_error_flag_ = false;
+		//
 		int x11_error_handler(Display* _display_, XErrorEvent* _error_) {
+			//
+			//
+			_x11_error_flag_ = true;
 			//
 			//
 			cerr << __FUNCTION__ << " have catched error from x11: " << endl;
@@ -277,17 +295,25 @@ namespace virtual_led_model {
 			// Preparing error message
 			char _error_mesage_buffer_[10240];
 			//
-			if(!XGetErrorText(_display_, _error_->error_code, _error_mesage_buffer_, 10240)) {
-				//
-				FUNC_FAILED("have fail on XGetErrorText(). Error message cannot be obtained.");
-			}
-			else {
-				//
-				cerr << _error_mesage_buffer_ << endl;
-			}
+			XGetErrorText(_display_, _error_->error_code, _error_mesage_buffer_, 10240);
+			//
+			cerr << _error_mesage_buffer_ << endl;
 			//
 			// Return value will be ignored - it is x11 design
 			return 0;
+		}
+
+		//
+		//
+		bool check_and_reset_x11_error() {
+			//
+			bool _result_ = _x11_error_flag_;
+			//
+			//
+			_x11_error_flag_ = false;
+			//
+			//
+			return _result_;
 		}
 
 		//
@@ -306,12 +332,10 @@ namespace virtual_led_model {
 		bool init() {
 			//
 			// Setting Xlib error handler
-			RETURN_FAIL_IF(!XSetErrorHandler(x11_error_handler),
-					"failed on XSetErrorHandler");
+			XSetErrorHandler(x11_error_handler);
 			//
 			// Setting Xlib IO error handler
-			RETURN_FAIL_IF(!XSetIOErrorHandler(x11_io_error_handler),
-					"failed on XSetIOErrorHandler()");
+			XSetIOErrorHandler(x11_io_error_handler);
 			//
 			// Preparing Xlib for multithreading environment
 			RETURN_FAIL_IF(!XInitThreads(),
@@ -321,32 +345,33 @@ namespace virtual_led_model {
 			RETURN_FAIL_IF((_display_ = XOpenDisplay(NULL)) == NULL,
 					"failed on XOpenDisplay()");
 			//
+			// TODO this must be turned off after debugging complete
+			// TODO this must be turned on to debug our x11 code
+			// Make X11 calls synchronous
+			XSynchronize(_display_, True);
+			//
 			//
 			int s = DefaultScreen(_display_);
 			//
 			_window_ = XCreateSimpleWindow(_display_, RootWindow(_display_, s), 10, 10, 400, 80, 1,
 								   BlackPixel(_display_, s), WhitePixel(_display_, s));
-			//
-			RETURN_FAIL_IF(_window_ == None,
-					"failed on XCreateSimpleWindow()");
+			RETURN_FAIL_IF(_window_ == None, "failed on XCreateSimpleWindow()");
 			//
 			//
-			RETURN_FAIL_IF(!XSelectInput(_display_, _window_, ExposureMask),
-					"failed on XSelectInput()");
+			XSelectInput(_display_, _window_, ExposureMask);
+			RETURN_FAIL_IF(check_and_reset_x11_error(), "failed on XSelectInput()");
 			//
 			//
-			RETURN_FAIL_IF(!XMapWindow(_display_, _window_),
-					"failed on XMapWindow()");
+			XMapWindow(_display_, _window_);
+			RETURN_FAIL_IF(check_and_reset_x11_error(), "failed on XMapWindow()");
 			//
 			//
-			RETURN_FAIL_IF(!XStoreName(_display_, _window_, "Virtual LED visualization"),
-					"failed on XStoreName()");
+			XStoreName(_display_, _window_, "Virtual LED visualization");
+			RETURN_FAIL_IF(check_and_reset_x11_error(), "failed on XStoreName()");
 			//
 			// Allocating atom WM_DELETE_WINDOW
 			WM_DELETE_WINDOW = XInternAtom(_display_, "WM_DELETE_WINDOW", False);
-			//
-			RETURN_FAIL_IF(WM_DELETE_WINDOW == None,
-					"failed on XInternAtom()");
+			RETURN_FAIL_IF(WM_DELETE_WINDOW == None, "failed on XInternAtom()");
 			//
 			//
 			RETURN_FAIL_IF(!XSetWMProtocols(_display_, _window_, &WM_DELETE_WINDOW, 1),
@@ -354,9 +379,7 @@ namespace virtual_led_model {
 			//
 			// Getting graphic context
 			_gc_ = XCreateGC(_display_, _window_, NULL, NULL);
-			//
-			RETURN_FAIL_IF(_gc_ == None,
-					"failed on XCreateGC()");
+			RETURN_FAIL_IF(_gc_ == None, "failed on XCreateGC()");
 			//
 			// Allocating colors
 			if(!XAllocColor(_display_, DefaultColormap(_display_, s), &_red_color_) ||
@@ -392,7 +415,7 @@ namespace virtual_led_model {
 		//
 		bool signal_led_change(led_color _new_led_color_, led_state _new_led_state_, int _new_led_rate_) {
 			//
-			assert(pthread_mutex_lock(&_visualization_data_mutex_));
+			assert(!pthread_mutex_lock(&_visualization_data_mutex_));
 			//
 			// Preserving old values
 			led_color _old_color_ = _visualization_color_;
@@ -512,21 +535,29 @@ namespace virtual_led_model {
 			}
 			//
 			// Releasing x11 resources
-			if(!XFreeGC(_display_, _gc_)) {
+			XFreeGC(_display_, _gc_);
+			//
+			if(check_and_reset_x11_error()) {
 				//
 				FUNC_FAILED("have fail on XFreeGC()");
 				//
 				_result_ = false;
 			}
 			//
-			if(!XDestroyWindow(_display_, _window_)) {
+			//
+			XDestroyWindow(_display_, _window_);
+			//
+			if(check_and_reset_x11_error()) {
 				//
 				FUNC_FAILED("have fail on XDestroyWindow()");
 				//
 				_result_ = false;
 			}
 			//
-			if(!XCloseDisplay(_display_)) {
+			//
+			XCloseDisplay(_display_);
+			//
+			if(check_and_reset_x11_error()) {
 				//
 				FUNC_FAILED("have fail on XCloseDisplay()");
 				//
