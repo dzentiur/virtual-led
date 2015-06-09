@@ -39,6 +39,9 @@ using namespace std;
 #define LOG_FAIL_IF( code, message ) if ( code ) { cerr << __FUNCTION__ << " in file " << __FILE__ << " on line " \
 	<< __LINE__ << " " << message << std::endl; }
 
+#define SAFE_SET_PTR_BOOL_FLAG( bool_flag_ptr, bool_flag_value ) \
+		if( bool_flag_ptr != NULL) { *bool_flag_ptr = bool_flag_value; }
+
 
 //
 // namespace for model
@@ -1047,6 +1050,7 @@ namespace commands_processing {
 			string& _argument_) {
 		//
 		// Search for argument delimiter
+		// TODO we must not be bound to one space as delimiter
 		size_t _first_space_pos_ = _command_clause_.find(" ", 0);
 		//
 		if(_first_space_pos_ == string::npos ) {
@@ -1535,6 +1539,51 @@ namespace system_interaction {
 		return true;
 	}
 
+	bool read_and_process_command_from_buffer(char* _buffer_, size_t* _buffer_content_length_,
+			bool* _command_not_found_) {
+		//
+		// try reading command from buffer
+		string _command_;
+		//
+		size_t _command_size_read_ = commands_processing::read_command(_buffer_,
+				*_buffer_content_length_, _command_);
+		//
+		if(_command_size_read_ <= 0) {
+			//
+			SAFE_SET_PTR_BOOL_FLAG(_command_not_found_, true);
+			//
+			//
+			return true;
+		}
+		//
+		// moving buffer content to buffer begin
+		memmove(_buffer_, _buffer_+_command_size_read_,
+				*_buffer_content_length_-_command_size_read_);
+		//
+		*_buffer_content_length_ -= _command_size_read_;
+		//
+		// command is read
+		string _command_result_;
+		//
+		if(!commands_processing::process_command(_command_,	_command_result_)) {
+			//
+			//
+			_command_result_.assign("FAILED");
+		}
+		//
+		//
+		_command_result_.append("\n");
+		//
+		// Writing output
+		RETURN_FAIL_IF(write(_fifo_out_fd_, _command_result_.c_str(), _command_result_.size()) < 0,
+				"failed on write()");
+		//
+		SAFE_SET_PTR_BOOL_FLAG(_command_not_found_, false);
+		//
+		//
+		return true;
+	}
+
 	//
 	//
 	bool command_processing_loop() {
@@ -1550,7 +1599,8 @@ namespace system_interaction {
 		while(true) {
 			//
 			// reading first portion of data
-			size_t _bytes_read_ = read(_fifo_in_fd_, _buffer_+_buffer_content_length_, _buffer_size_-_buffer_content_length_);
+			size_t _bytes_read_ = read(_fifo_in_fd_, _buffer_+_buffer_content_length_,
+					_buffer_size_-_buffer_content_length_);
 			//
 			RETURN_FAIL_IF(_bytes_read_ < 0,
 					"failed on read()");
@@ -1566,36 +1616,14 @@ namespace system_interaction {
 			// affecting buffer offset due to read data amount
 			_buffer_content_length_ += _bytes_read_;
 			//
-			// try reading command from buffer
-			string _command_;
+			bool _command_not_found_ = false;
 			//
-			size_t _command_size_read_ = commands_processing::read_command(_buffer_, _buffer_size_,
-					_command_);
-			//
-			if(_command_size_read_ > 0) {
+			while((_buffer_content_length_ > 0) && !_command_not_found_) {
 				//
-				// moving buffer content to buffer begin
-				memmove(_buffer_, _buffer_+_command_size_read_,
-						_buffer_content_length_-_command_size_read_);
-				//
-				_buffer_content_length_ -= _command_size_read_;
-				//
-				// command is read
-				string _command_result_;
-				//
-				if(!commands_processing::process_command(_command_,	_command_result_)) {
-					//
-					//
-					_command_result_.assign("FAILED");
-				}
-				//
-				//
-				_command_result_.append("\n");
-				//
-				// Writing output
-				RETURN_FAIL_IF(write(_fifo_out_fd_, _command_result_.c_str(), _command_result_.size()) < 0,
-						"failed on write()");
+				read_and_process_command_from_buffer(_buffer_, &_buffer_content_length_,
+						&_command_not_found_);
 			}
+
 		}
 	}
 };
